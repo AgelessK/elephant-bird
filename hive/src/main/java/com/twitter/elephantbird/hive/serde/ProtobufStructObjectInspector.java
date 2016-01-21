@@ -9,6 +9,7 @@ import com.google.protobuf.Descriptors.FieldDescriptor;
 import com.google.protobuf.Descriptors.FieldDescriptor.JavaType;
 import com.google.protobuf.Descriptors.FieldDescriptor.Type;
 import com.google.protobuf.ByteString;
+import com.google.protobuf.DynamicMessage;
 import com.google.protobuf.Message;
 
 import org.apache.hadoop.hive.serde2.objectinspector.ObjectInspector;
@@ -23,13 +24,26 @@ public final class ProtobufStructObjectInspector extends SettableStructObjectIns
   public static class ProtobufStructField implements StructField {
 
     private ObjectInspector oi = null;
-    private String comment = null;
     private FieldDescriptor fieldDescriptor;
 
     @SuppressWarnings("unchecked")
     public ProtobufStructField(FieldDescriptor fieldDescriptor) {
       this.fieldDescriptor = fieldDescriptor;
       oi = this.createOIForField();
+    }
+ 
+    @Override
+    public boolean equals(Object obj) {
+      if (obj instanceof ProtobufStructField) {
+        ProtobufStructField other = (ProtobufStructField)obj;
+        return fieldDescriptor.equals(other.fieldDescriptor);
+      }
+      return false;
+    }
+
+    @Override
+    public int hashCode() {
+      return fieldDescriptor.hashCode();
     }
 
     @Override
@@ -44,7 +58,12 @@ public final class ProtobufStructObjectInspector extends SettableStructObjectIns
 
     @Override
     public String getFieldComment() {
-      return comment;
+      return fieldDescriptor.getFullName();
+    }
+
+    @Override
+    public int getFieldID() {
+      return fieldDescriptor.getIndex();
     }
 
     public FieldDescriptor getFieldDescriptor() {
@@ -109,6 +128,19 @@ public final class ProtobufStructObjectInspector extends SettableStructObjectIns
   }
 
   @Override
+  public boolean equals(Object obj) {
+    if (obj instanceof ProtobufStructObjectInspector) {
+      ProtobufStructObjectInspector other = (ProtobufStructObjectInspector)obj;
+      return this.descriptor.equals(other.descriptor) && this.structFields.equals(other.structFields);
+    }
+    return false;
+  }
+
+  @Override
+  public int hashCode() {
+    return descriptor.hashCode();
+  }
+
   public Category getCategory() {
     return Category.STRUCT;
   }
@@ -132,15 +164,37 @@ public final class ProtobufStructObjectInspector extends SettableStructObjectIns
 
   @Override
   public Object create() {
-    return descriptor.toProto().toBuilder().build();
+//    return descriptor.toProto().toBuilder().build();
+    return DynamicMessage.newBuilder(descriptor);
   }
 
   @Override
   public Object setStructFieldData(Object data, StructField field, Object fieldValue) {
-    return ((Message) data)
-        .toBuilder()
-        .setField(descriptor.findFieldByName(field.getFieldName()), fieldValue)
-        .build();
+//    return ((Message) data)
+//        .toBuilder()
+//        .setField(descriptor.findFieldByName(field.getFieldName()), fieldValue)
+//        .build();
+    DynamicMessage.Builder builder = (DynamicMessage.Builder)data;
+    ProtobufStructField psf = (ProtobufStructField)field;
+    FieldDescriptor fd = psf.getFieldDescriptor();
+    if (fd.isRepeated()) {
+      return builder.setField(fd, fieldValue);
+    }
+    switch (fd.getType()) {
+      case ENUM:
+        builder.setField(fd, fd.getEnumType().findValueByName((String) fieldValue));
+        break;
+      case BYTES:
+        builder.setField(fd, ByteString.copyFrom((byte[])fieldValue));
+        break;
+      case MESSAGE:
+        builder.setField(fd, ((Message.Builder)fieldValue).build());
+        break;
+      default:
+        builder.setField(fd, fieldValue);
+        break;
+    }
+    return builder;
   }
 
   @Override
@@ -153,16 +207,35 @@ public final class ProtobufStructObjectInspector extends SettableStructObjectIns
     if (data == null) {
       return null;
     }
-    Message m = (Message) data;
+
+//    Message m = (Message) data;
+    Message.Builder builder;
+    if (data instanceof Message.Builder) {
+      builder = (Message.Builder)data;
+    } else if (data instanceof Message) {
+      builder = ((Message)data).toBuilder();
+    } else {
+      throw new RuntimeException("Type Message or Message.Builder expected: " + data.getClass().getCanonicalName());
+    }
+
     ProtobufStructField psf = (ProtobufStructField) structField;
     FieldDescriptor fieldDescriptor = psf.getFieldDescriptor();
-    Object result = m.getField(fieldDescriptor);
+
+//    Object result = m.getField(fieldDescriptor);
+    Object result = builder.getField(fieldDescriptor);
+    if (fieldDescriptor.isRepeated()) {
+      return result;
+    }
+    if (fieldDescriptor.getType() == Type.MESSAGE) {
+      return ((Message)result).toBuilder();
+    }
     if (fieldDescriptor.getType() == Type.ENUM) {
       return ((EnumValueDescriptor)result).getName();
     }
     if (fieldDescriptor.getType() == Type.BYTES && (result instanceof ByteString)) {
-        return ((ByteString)result).toByteArray();
+      return ((ByteString)result).toByteArray();
     }
+
     return result;
   }
 
@@ -177,10 +250,13 @@ public final class ProtobufStructObjectInspector extends SettableStructObjectIns
       return null;
     }
     List<Object> result = Lists.newArrayList();
-    Message m = (Message) data;
-    for (FieldDescriptor fd : descriptor.getFields()) {
-      result.add(m.getField(fd));
+//    Message m = (Message) data;
+//    for (FieldDescriptor fd : descriptor.getFields()) {
+//      result.add(m.getField(fd));
+    for (StructField field : structFields) {
+      result.add(getStructFieldData(data, field));
     }
     return result;
   }
 }
+
